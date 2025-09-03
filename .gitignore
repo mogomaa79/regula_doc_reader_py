@@ -10,6 +10,7 @@ credentials.json
 token.pickle
 data/
 static/
+results/
 
 # Distribution / packaging
 .Python

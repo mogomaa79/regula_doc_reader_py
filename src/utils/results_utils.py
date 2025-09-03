@@ -1,8 +1,5 @@
 import os
-import json
 import pickle
-import traceback
-from collections import Counter
 
 import gspread
 import pandas as pd
@@ -159,6 +156,14 @@ class ResultsAgent:
 
         # Read Regula results
         df = pd.read_csv(csv_file_path)
+        # Convert data types for proper merge
+        df["inputs.image_id"] = df["inputs.image_id"].astype(str)
+        
+        # Handle Maid’s ID column - check if it exists first
+        if "Maid’s ID" in self.all_df.columns:
+            self.all_df["Maid’s ID"] = self.all_df["Maid’s ID"].fillna(-1).astype(int).astype(str)
+            # Remove -1 entries (originally NaN)
+            self.all_df = self.all_df[self.all_df["Maid’s ID"] != "-1"]
 
         # Merge with the consolidated Excel review data
         merged_df = pd.merge(
@@ -186,8 +191,8 @@ class ResultsAgent:
             "Passport ID": "outputs.number",
         }
 
-        value_col = f"Regula Value"       
-        certainty_col = f"Regula Certainty" 
+        value_col = "Regula Value"       
+        probability_col = "Regula Probability" 
 
         def _get_model_value(series):
             maid_id = series.get("Maid’s ID")
@@ -212,32 +217,37 @@ class ResultsAgent:
                 return ""
             return "" if pd.isna(val) else str(val)
 
-        def _get_model_certainty(series):
-            """Optional certainty from a 'certainty' JSON column in df; else False."""
+        def _get_model_probability(series):
+            """Get Regula probability score for the field; returns 0.0 if not found."""
             maid_id = series.get("Maid’s ID")
             field = series.get("Modified Field")
             mapped_field = google_sheet_columns.get(field)
             if not mapped_field:
-                return False
+                return 0.0
 
             row = df[df["inputs.image_id"] == maid_id]
             if row.empty:
-                return False
+                return 0.0
 
             row = row.iloc[0]
-            certainty_blob = row.get("certainty", "{}")
+            # Convert from outputs.field to probability.field format
+            field_key = mapped_field.split(".", 1)[1]  # e.g., 'number' from 'outputs.number'
+            prob_col = f"probability.{field_key}"
+            
+            # Check if column exists
+            if prob_col not in df.columns:
+                return 0.0
+            
+            # Handle both scalar and Series returns from pandas merge
+            if hasattr(row[prob_col], 'iloc'):
+                prob_val = row[prob_col].iloc[0] if len(row) > 0 else 0.0
+            else:
+                prob_val = row[prob_col]  # Already a scalar
+            
             try:
-                if isinstance(certainty_blob, str):
-                    cdict = json.loads(certainty_blob)
-                elif isinstance(certainty_blob, dict):
-                    cdict = certainty_blob
-                else:
-                    return False
-                field_key = mapped_field.split(".", 1)[1]  # e.g., 'number'
-                val = cdict.get(field_key)
-                return bool(val)
-            except Exception:
-                return False
+                return float(prob_val) if prob_val is not None else 0.0
+            except (ValueError, TypeError):
+                return 0.0
 
         # Keep only the columns we need from the review data
         base_cols = ["Maid’s ID", "Modified Field", "Agent Value", "OCR Value", "Maid’s Nationality"]
@@ -246,7 +256,7 @@ class ResultsAgent:
 
         # Compute model outputs per row of the review data
         filtered_df[value_col] = filtered_df.apply(_get_model_value, axis=1)
-        filtered_df[certainty_col] = filtered_df.apply(_get_model_certainty, axis=1)
+        filtered_df[probability_col] = filtered_df.apply(_get_model_probability, axis=1)
         filtered_df["Edited Agent Value"] = filtered_df.apply(
             lambda row: self.edit_agent_value(row.get("Agent Value", ""), row.get("Modified Field", "")),
             axis=1,
@@ -260,7 +270,7 @@ class ResultsAgent:
             "Edited Agent Value",
             value_col,
             "Similarity",
-            certainty_col,
+            probability_col,
             "Agent Value",
             "OCR Value",
             "Maid’s Nationality",

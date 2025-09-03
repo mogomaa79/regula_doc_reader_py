@@ -1,6 +1,6 @@
 # main.py
 from __future__ import annotations
-import os, sys, json, pathlib, argparse, traceback
+import os, json, pathlib
 import pandas as pd
 from typing import List, Dict
 
@@ -81,6 +81,9 @@ def run(image_root: str, dataset_country: str, spreadsheet_id: str, credentials_
     
             uni = postprocess(uni)
 
+            # Extract probabilities for each field from Regula
+            probs = uni.get("probabilities", {})
+            
             row = {
                 "inputs.image_id": maid_id,  # key used for merging in your sheet
                 "outputs.number": uni.get("number", ""),
@@ -101,6 +104,24 @@ def run(image_root: str, dataset_country: str, spreadsheet_id: str, credentials_
                 "outputs.mrzLine1": uni.get("mrzLine1", ""),
                 "outputs.mrzLine2": uni.get("mrzLine2", ""),
                 "outputs.original number": uni.get("number", ""),
+                # Add Regula probability scores for each field
+                "probability.number": probs.get("number", 0.0),
+                "probability.country": probs.get("country", 0.0),
+                "probability.name": probs.get("name", 0.0),
+                "probability.surname": probs.get("surname", 0.0),
+                "probability.middle name": probs.get("middle name", 0.0),
+                "probability.gender": probs.get("gender", 0.0),
+                "probability.place of birth": probs.get("place of birth", 0.0),
+                "probability.birth date": probs.get("birth date", 0.0),
+                "probability.issue date": probs.get("issue date", 0.0),
+                "probability.expiry date": probs.get("expiry date", 0.0),
+                "probability.mother name": probs.get("mother name", 0.0),
+                "probability.father name": probs.get("father name", 0.0),
+                "probability.spouse name": probs.get("spouse name", 0.0),
+                "probability.place of issue": probs.get("place of issue", 0.0),
+                "probability.country of issue": probs.get("country of issue", 0.0),
+                "probability.mrzLine1": probs.get("mrzLine1", 0.0),
+                "probability.mrzLine2": probs.get("mrzLine2", 0.0),
             }
             rows.append(row)
             processed += 1

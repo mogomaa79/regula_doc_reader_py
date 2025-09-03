@@ -5,154 +5,61 @@ from datetime import datetime
 from dateutil.relativedelta import relativedelta
 import fuzzywuzzy.fuzz as fuzz
 
-from src.utils.country_rules import *
+from src.utils.country_rules import country_rules, derive_country_of_issue
 from src.utils.results_utils import mapper
 import pycountry
 
-string_fields = [
-    "number", "country", "name", "surname", "middle name", "gender",
-    "place of birth", "mother name", "father name", "place of issue", "country of issue",
-    "mrz_surname", "mrz_name", "mrz_date_of_birth", "mrz_date_of_expiry", "mrz_gender"
-]
+def get_string_value(field_value):
+    """Extract string value from field or return empty string"""
+    if field_value is None:
+        return ""
+    if hasattr(field_value, '__str__'):
+        str_value = str(field_value)
+        # Handle "nan", "NaN", "NAN" strings specifically
+        if str_value.lower() in ['nan', 'none', 'null', 'n/a', 'na']:
+            return ""
+        return str_value
+    return str(field_value) if field_value else ""
 
-def valid_mrz_one(mrz_line1):
-    """Check if there are more than occurence of '<<' before a letter"""
-    matches = re.findall(r'<<[A-Z]', mrz_line1)
-    return len(matches) <= 1
+def get_probability(field_value):
+    """Extract probability from Regula response metadata"""
+    if isinstance(field_value, dict) and 'prob' in field_value:
+        return float(field_value['prob'])
+    return 0.0
 
-def format_string_fields(formatted_data):
-    for field in string_fields:
-        if field in formatted_data:
-            value = get_string_value(formatted_data[field]).upper()
-            if value in ["NAN", "NONE", "NULL", "N/A", "NA"]:
-                value = ""
-            value = re.sub(r'[^\w\s]', ' ', value)
-
-            value = unidecode(value)
-            value = re.sub(r'\s+', ' ', value)
-            if value:
-                update_field_with_certainty(formatted_data, field, value.strip())
-            else:
-                update_field_with_certainty(formatted_data, field, "")
-    return formatted_data
+def update_field_with_probability(formatted_data, probabilities, field_name, new_value, probability=None):
+    """Update a field with Regula probability tracking"""
+    if new_value is None:
+        new_value = ""
+    
+    formatted_data[field_name] = str(new_value)
+    if probability is not None:
+        probabilities[field_name] = float(probability)
+    # If probability is None, preserve existing probability from Regula
+    elif field_name not in probabilities:
+        probabilities[field_name] = 0.0
 
 def postprocess(json_data):
+    """
+    Streamlined postprocessing that focuses on domain-specific validation
+    while relying on Regula for MRZ, checksums, and basic field extraction.
+    """
     formatted_data = dict(json_data)
-
-    def calculate_checksum(input_string):
-        weights = [7, 3, 1]
-        total = 0
-        for i, char in enumerate(input_string):
-            if char.isdigit():
-                value = int(char)
-            elif char == '<':
-                value = 0
-            else:
-                value = ord(char) - 55  # A=10, B=11, etc.
-            total += value * weights[i % 3]
-        return total % 10
     
-    mrz_line1 = get_string_value(formatted_data.get("mrzLine1", ""))
-    mrz_line2 = get_string_value(formatted_data.get("mrzLine2", ""))
-    country = get_string_value(formatted_data.get("country", ""))
-
-    if country not in mapper.values():
-        update_field_with_certainty(formatted_data, "country", country, False)
-        country = country.title()
-        if country in mapper.keys():
-            country = mapper[country]
-            update_field_with_certainty(formatted_data, "country", country, True)
-    else:
-        update_field_with_certainty(formatted_data, "country", country, True)
-
-    if not isinstance(mrz_line1, str): mrz_line1 = ""
-    if not isinstance(mrz_line2, str): mrz_line2 = ""
-
-    mrz_line1 = mrz_line1.strip()
-    mrz_line2 = mrz_line2.strip()
-
-    mrz_surname = get_string_value(formatted_data.get("mrz_surname", ""))
-    mrz_name = get_string_value(formatted_data.get("mrz_name", ""))
-
-    if valid_mrz_one(mrz_line1) and (mrz_surname or mrz_name) and country not in ["UZB"]:
-        ocr_surname = get_string_value(formatted_data.get("surname", ""))
-        ocr_name = get_string_value(formatted_data.get("name", ""))
-
-        if country in ["LKA", "IND", "MDG"]:
-            if mrz_surname:
-                clean_surname = unidecode(re.sub(r'[^\w\s]', '', mrz_surname).upper().replace(" ", ""))
-                clean_original = unidecode(re.sub(r'[^\w\s]', '', ocr_surname).upper().replace(" ", ""))
-                if clean_surname != clean_original and len(clean_surname) >= len(clean_original):
-                    mrz_surname_certainty = get_certainty(formatted_data.get("mrz_surname", ""))
-                    ocr_surname_certainty = get_certainty(formatted_data.get("surname", ""))
-                    if mrz_surname_certainty == True or ocr_surname_certainty == False:
-                        update_field_with_certainty(formatted_data, "surname", mrz_surname, False)
-                    else:
-                        update_field_with_certainty(formatted_data, "surname", ocr_surname, False)
-            
-            if mrz_name:
-                clean_mrz = re.sub(r'[^\w\s]', '', mrz_name).upper().replace(" ", "")
-                clean_original = re.sub(r'[^\w\s]', '', ocr_name).upper().replace(" ", "")
-                ocr_name_certainty = get_certainty(formatted_data.get("name", ""))
-                mrz_name_certainty = get_certainty(formatted_data.get("mrz_name", ""))
-
-                if clean_original != clean_mrz and len(clean_original) <= len(clean_mrz):
-                    if mrz_name_certainty or ocr_name_certainty == False:
-                        update_field_with_certainty(formatted_data, "name", mrz_name, False)
-                    else:
-                        update_field_with_certainty(formatted_data, "name", ocr_name, False)
-        
-        else:
-            if mrz_surname:
-                clean_surname = unidecode(re.sub(r'[^\w\s]', '', mrz_surname).upper().replace(" ", ""))
-                clean_original = unidecode(re.sub(r'[^\w\s]', '', ocr_surname).upper().replace(" ", ""))
-                if clean_surname != clean_original:
-                    mrz_surname_certainty = get_certainty(formatted_data.get("mrz_surname", ""))
-                    ocr_surname_certainty = get_certainty(formatted_data.get("surname", ""))
-                    if mrz_surname_certainty == True or ocr_surname_certainty == False:
-                        update_field_with_certainty(formatted_data, "surname", mrz_surname, False)
-                    else:
-                        update_field_with_certainty(formatted_data, "surname", ocr_surname, False)
-            
-            if mrz_name:
-                clean_mrz = re.sub(r'[^\w\s]', '', mrz_name).upper().replace(" ", "")
-                clean_original = re.sub(r'[^\w\s]', '', ocr_name).upper().replace(" ", "")
-                ocr_name_certainty = get_certainty(formatted_data.get("name", ""))
-                mrz_name_certainty = get_certainty(formatted_data.get("mrz_name", ""))
-
-                if clean_original != clean_mrz:
-                    if mrz_name_certainty or ocr_name_certainty == False:
-                        update_field_with_certainty(formatted_data, "name", mrz_name, False)
-                    else:
-                        update_field_with_certainty(formatted_data, "name", ocr_name, False)
+    # Extract or initialize probabilities from Regula
+    probabilities = formatted_data.get("probabilities", {})
     
-
-    if formatted_data.get("surname", "").startswith(country) and country*2 not in mrz_line1:
-        update_field_with_certainty(formatted_data, "surname", formatted_data.get("surname", "")[3:], False)
-    
-
-    if len(mrz_line2) >= 10:
-        doc_number = mrz_line2[:9].replace("<", "").strip()
-        doc_number_check = mrz_line2[9]
-        if doc_number and doc_number_check.isdigit():
-            calculated_check = str(calculate_checksum(doc_number.ljust(9, '<')))
-            if calculated_check == doc_number_check and doc_number != formatted_data.get("number", ""):
-                update_field_with_certainty(formatted_data, "number", doc_number, False)
-
-
-    PIVOT = datetime.now().year % 100          # 25 → for 2025
-    TODAY  = datetime.now().date()
+    # === DATE FORMAT STANDARDIZATION ===
+    # Regula extracts dates but we need consistent formatting
+    PIVOT = datetime.now().year % 100
+    TODAY = datetime.now().date()
 
     def _expand_two_digit_year(yy: int, field: str) -> int:
-        """
-        Century expansion that depends on the field.
-        birth / issue : pivot rule (<= pivot → 2000s, > pivot → 1900s)
-        expiry        : start in 2000s and adjust later if needed
-        """
+        """Century expansion that depends on the field."""
         if yy > 1000:
             return yy
         elif field in ["expiry date", "issue date"]:
-            return 2000 + yy            # 27 → 2027, 03 → 2003 (initial guess)
+            return 2000 + yy
         else:
             return 1900 + yy if yy > PIVOT else 2000 + yy
 
@@ -174,113 +81,151 @@ def postprocess(json_data):
                 return None
 
     def smart_date(raw: str, field: str) -> str | None:
-        """
-        Convert passport dates to 'dd/mm/YYYY'.
-        field ∈ {'birth date', 'issue date', 'expiry date'}
-        """
+        """Convert passport dates to 'dd/mm/YYYY' format."""
         if not raw:
             return None
 
         dt = _parse_dd_mmm_yy(raw, field)
 
-        # 2️⃣ otherwise fall back to pandas
+        # Fall back to pandas
         if dt is None:
             try:
-                dt = pd.to_datetime(raw, dayfirst=True, errors="raise")
+                dt = pd.to_datetime(raw, dayfirst=False, errors="raise")
             except Exception:
                 return None
 
-        # 3️⃣ field-specific sanity
+        # Field-specific sanity checks
         if field == "birth date":
-            if dt.date() > TODAY:                       # birth in the future? subtract a century
+            if dt.date() > TODAY:
                 dt -= relativedelta(years=100)
-
         elif field == "issue date":
-            if dt.date() > TODAY:                       # issue in the future? subtract a century
+            if dt.date() > TODAY:
                 dt -= relativedelta(years=100)
-
         elif field == "expiry date":
-            # make sure expiry lies within the next 0-15 years
-            while dt.date() < TODAY:                    # already expired → add a century
+            while dt.date() < TODAY:
                 dt += relativedelta(years=100)
-            while dt.date() > TODAY + relativedelta(years=25):  # implausibly far → minus a century
+            while dt.date() > TODAY + relativedelta(years=25):
                 dt -= relativedelta(years=100)
 
         return dt.strftime("%d/%m/%Y")
 
-    for k in ["issue date", "birth date", "expiry date"]:
-        smart_date_value = smart_date(formatted_data.get(k, ""), k)
+    # Apply date formatting
+    for date_field in ["issue date", "birth date", "expiry date"]:
+        raw_date = get_string_value(formatted_data.get(date_field, ""))
+        original_prob = probabilities.get(date_field, 0.0)
+        
+        smart_date_value = smart_date(raw_date, date_field)
         if smart_date_value:
-            update_field_with_certainty(formatted_data, k, smart_date_value)
+            update_field_with_probability(formatted_data, probabilities, date_field, smart_date_value, original_prob)
         else:
-            old_value = get_string_value(formatted_data.get(k, ""))
-            update_field_with_certainty(formatted_data, k, old_value, False)
+            # Keep original value but mark lower confidence for malformed dates
+            update_field_with_probability(formatted_data, probabilities, date_field, raw_date, original_prob * 0.5)
 
-    mrz_gender = get_string_value(formatted_data.get("mrz_gender", ""))
-    if mrz_gender and mrz_gender in ["M", "F"]:
-        update_field_with_certainty(formatted_data, "gender", mrz_gender)
-    
+    # === PLACE OF ISSUE TO COUNTRY OF ISSUE VALIDATION ===
     place_of_issue = get_string_value(formatted_data.get("place of issue", ""))
-    place_of_issue_certainty = get_certainty(formatted_data.get("place of issue", ""))
+    place_of_issue_prob = probabilities.get("place of issue", 0.0)
+    
     if place_of_issue:
-        from src.utils.country_rules import derive_country_of_issue
+# derive_country_of_issue is already available from country_rules import
         derived_country, city = derive_country_of_issue(place_of_issue)
         if derived_country:
-            update_field_with_certainty(formatted_data, "country of issue", derived_country, place_of_issue_certainty)
+            update_field_with_probability(formatted_data, probabilities, "country of issue", derived_country, place_of_issue_prob)
+            # For Uganda, update place to city only
+            country = get_string_value(formatted_data.get("country", ""))
             if country == "UGA":
-                update_field_with_certainty(formatted_data, "place of issue", city)
+                update_field_with_probability(formatted_data, probabilities, "place of issue", city, place_of_issue_prob)
 
-    invert_country = {v: k for k, v in mapper.items()}
-    place_of_birth = get_string_value(formatted_data.get("place of birth", ""))
-    if place_of_birth.endswith(country):
-        if len(place_of_birth) > 3 and place_of_birth.endswith(' ' + country):
-            update_field_with_certainty(formatted_data, "place of birth", place_of_birth[:-4])
-        elif len(place_of_birth) == 3:
-            update_field_with_certainty(formatted_data, "place of birth", invert_country[country].upper())
-
-    def country_lookup(name: str) -> str | None:
-        try:
-            # pycountry returns a list of matches ranked by Levenshtein distance
-            country = pycountry.countries.search_fuzzy(name)[0]
-            return country.name
-        except LookupError:
-            return None
-
-    country_of_issue = get_string_value(formatted_data.get("country of issue", ""))
-    found = False
-    for canonical in mapper.keys():
-        canonical = canonical.upper()
-        if fuzz.partial_ratio(country_of_issue, canonical) >= 90:
-            update_field_with_certainty(formatted_data, "country of issue", canonical)
-            found = True
-            break
+    # === COUNTRY VALIDATION ===
+    country = get_string_value(formatted_data.get("country", ""))
+    country_prob = probabilities.get("country", 0.0)
     
-    if not found:
-        lookup = country_lookup(country_of_issue)
-        if lookup:
-            update_field_with_certainty(formatted_data, "country of issue", lookup.upper())
+    if country not in mapper.values():
+        # Try to map from country name to code
+        country_title = country.title()
+        if country_title in mapper.keys():
+            update_field_with_probability(formatted_data, probabilities, "country", mapper[country_title], country_prob)
+        else:
+            # Mark as uncertain if we can't validate the country
+            update_field_with_probability(formatted_data, probabilities, "country", country, country_prob * 0.5)
 
+    # === PLACE OF BIRTH CLEANING ===
+    place_of_birth = get_string_value(formatted_data.get("place of birth", ""))
+    place_of_birth_prob = probabilities.get("place of birth", 0.0)
+    
+    if place_of_birth:
+        # Remove country suffix if present
+        if place_of_birth.endswith(country):
+            if len(place_of_birth) > 3 and place_of_birth.endswith(' ' + country):
+                cleaned_place = place_of_birth[:-4]
+                update_field_with_probability(formatted_data, probabilities, "place of birth", cleaned_place, place_of_birth_prob)
+            elif len(place_of_birth) == 3:
+                # If it's just the country code, convert to full country name
+                invert_country = {v: k for k, v in mapper.items()}
+                if country in invert_country:
+                    full_country = invert_country[country].upper()
+                    update_field_with_probability(formatted_data, probabilities, "place of birth", full_country, place_of_birth_prob)
+
+        # Validate against known birth places
+        birth_places = pd.read_csv("static/birth_places.csv")
+        birth_places_set = set(birth_places["places"].unique())
+        if place_of_birth in birth_places_set:
+            # Boost confidence for known valid birth places
+            update_field_with_probability(formatted_data, probabilities, "place of birth", place_of_birth, min(1.0, place_of_birth_prob * 1.2))
+
+    # === COUNTRY OF ISSUE VALIDATION ===
+    country_of_issue = get_string_value(formatted_data.get("country of issue", ""))
+    country_of_issue_prob = probabilities.get("country of issue", 0.0)
+    
+    if country_of_issue:
+        found = False
+        # Try fuzzy matching against known countries
+        for canonical in mapper.keys():
+            canonical_upper = canonical.upper()
+            if fuzz.partial_ratio(country_of_issue, canonical_upper) >= 90:
+                update_field_with_probability(formatted_data, probabilities, "country of issue", canonical_upper, country_of_issue_prob)
+                found = True
+                break
+        
+        if not found:
+            # Try pycountry lookup if available
+            if pycountry:
+                def country_lookup(name: str) -> str | None:
+                    try:
+                        country_match = pycountry.countries.search_fuzzy(name)[0]
+                        return country_match.name
+                    except LookupError:
+                        return None
+                
+                lookup_result = country_lookup(country_of_issue)
+                if lookup_result:
+                    update_field_with_probability(formatted_data, probabilities, "country of issue", lookup_result.upper(), country_of_issue_prob)
+
+    # === APPLY COUNTRY-SPECIFIC RULES ===
     formatted_data = country_rules(formatted_data, country)
 
-    try:
-        from src.passport_extraction import CertainField
-        for key, value in formatted_data.items():
-            if value is None:
-                formatted_data[key] = CertainField("", False)
-            elif not isinstance(value, CertainField):
-                formatted_data[key] = CertainField(str(value) if value is not None else "", False)
-    except ImportError:
-        for key, value in formatted_data.items():
-            if value is None:
-                formatted_data[key] = ""
+    # === STRING FIELD CLEANING ===
+    string_fields = [
+        "number", "country", "name", "surname", "middle name", "gender",
+        "place of birth", "mother name", "father name", "place of issue", "country of issue"
+    ]
+    
+    for field in string_fields:
+        if field in formatted_data:
+            value = get_string_value(formatted_data[field]).upper()
+            if value in ["NAN", "NONE", "NULL", "N/A", "NA"]:
+                value = ""
+            
+            # Clean special characters but preserve spaces
+            value = re.sub(r'[^\w\s]', ' ', value)
+            value = unidecode(value)
+            value = re.sub(r'\s+', ' ', value)
+            
+            if value:
+                formatted_data[field] = value.strip()
+            else:
+                formatted_data[field] = ""
 
-
-    formatted_data = format_string_fields(formatted_data)
-
-    place_of_birth = get_string_value(formatted_data.get("place of birth", ""))
-    birth_places = pd.read_csv("static/birth_places.csv")
-    birth_places = set(birth_places["places"].unique())
-    if place_of_birth in birth_places:
-        update_field_with_certainty(formatted_data, "place of birth", place_of_birth, True)
-
+    # Store probabilities back in the formatted data
+    formatted_data["probabilities"] = probabilities
+    
     return formatted_data

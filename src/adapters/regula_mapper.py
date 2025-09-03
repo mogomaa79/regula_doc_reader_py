@@ -95,8 +95,8 @@ def _build_field_index(raw: Dict[str, Any]) -> Dict[str, Dict[str, List[Tuple[st
             if src not in ("MRZ", "VISUAL"):
                 continue
             val = _norm(v.get("value") or v.get("originalValue"))
-            # Regula sometimes returns probability 0 even when certain; keep as float but allow 0
-            prob = float(v.get("probability") or 0)
+            # Regula returns probability as 0-100, normalize to 0.0-1.0 scale
+            prob = float(v.get("probability") or 0) / 100.0
             if val:
                 rec[src].append((val, prob))
 
@@ -105,7 +105,8 @@ def _build_field_index(raw: Dict[str, Any]) -> Dict[str, Dict[str, List[Tuple[st
             flat_val = _norm(f.get("value"))
             if flat_val:
                 # Unknown source; treat as VISUAL by default
-                rec["VISUAL"].append((flat_val, float(f.get("probability") or 0)))
+                # Normalize probability from 0-100 to 0.0-1.0 scale
+                rec["VISUAL"].append((flat_val, float(f.get("probability") or 0) / 100.0))
     return idx
 
 def _choose_value(
@@ -156,16 +157,16 @@ def regula_to_universal(raw: Dict[str, Any]) -> Dict[str, Any]:
     Convert Regula low-level response to your universal dict.
     - Picks a single value per target field (according to source preference rules)
     - Adds MRZ lines
-    - Includes optional '_meta' with chosen source and probability per field
+    - Includes Regula probability scores for each field
     """
     idx = _build_field_index(raw)
 
-    meta: Dict[str, Dict[str, Any]] = {}
+    probabilities: Dict[str, float] = {}
 
     def pick(label: str) -> str:
         prefer = PREFER_SOURCE.get(label)  # 'MRZ', 'VISUAL', or None
         val, src, prob = _choose_value(idx, FIELD_KEYS[label], prefer)
-        meta[label] = {"source": src, "prob": prob}
+        probabilities[label] = prob
         return val
 
     out = {
@@ -192,17 +193,23 @@ def regula_to_universal(raw: Dict[str, Any]) -> Dict[str, Any]:
     # MRZ lines: prefer dedicated "MRZ Strings"
     mrz_key = _lower("MRZ Strings")
     mrz_block = ""
+    mrz_prob = 0.0
     if mrz_key in idx and idx[mrz_key]["MRZ"]:
         # take highest-prob MRZ block for MRZ Strings
-        mrz_block = max(idx[mrz_key]["MRZ"], key=lambda t: t[1] if isinstance(t[1], (int, float)) else -1)[0]
+        best_mrz = max(idx[mrz_key]["MRZ"], key=lambda t: t[1] if isinstance(t[1], (int, float)) else -1)
+        mrz_block = best_mrz[0]
+        mrz_prob = best_mrz[1]
     elif mrz_key in idx and idx[mrz_key]["VISUAL"]:
-        mrz_block = max(idx[mrz_key]["VISUAL"], key=lambda t: t[1] if isinstance(t[1], (int, float)) else -1)[0]
+        best_visual = max(idx[mrz_key]["VISUAL"], key=lambda t: t[1] if isinstance(t[1], (int, float)) else -1)
+        mrz_block = best_visual[0]
+        mrz_prob = best_visual[1]
+    
     if mrz_block:
         l1, l2 = _best_mrz_lines(mrz_block)
         out["mrzLine1"], out["mrzLine2"] = l1, l2
-        meta["mrzLine1"] = {"source": "MRZ", "prob": 1.0 if l1 else 0.0}
-        meta["mrzLine2"] = {"source": "MRZ", "prob": 1.0 if l2 else 0.0}
+        probabilities["mrzLine1"] = mrz_prob if l1 else 0.0
+        probabilities["mrzLine2"] = mrz_prob if l2 else 0.0
 
-    # Attach meta for optional use (not consumed by your CSV)
-    out["_meta"] = meta
+    # Include probabilities in output for postprocessing and CSV export
+    out["probabilities"] = probabilities
     return out
