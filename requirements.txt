@@ -1,0 +1,1 @@
+regula-documentreader-webclient==8.2.440
