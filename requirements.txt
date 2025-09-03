@@ -1,1 +1,14 @@
-regula-documentreader-webclient==8.2.440
+# Regula
+regula-documentreader-webclient>=8.2
+
+# Core
+pandas
+python-dotenv
+unidecode
+fuzzywuzzy[speedup]
+requests
+
+# Google Sheets
+gspread
+google-auth
+google-auth-oauthlib
