@@ -32,51 +32,89 @@ This system processes passport images using Regula's document reader, applies co
 └─────────────────┘    └─────────────────┘    └─────────────────┘
 ```
 
-## 🔄 Data Flow
+## 🔄 Validation & Postprocessing Flow
 
-### 1. **Image Processing**
-```python
-# Input: Passport images in data/Philippines/[maid_id]/
-images = _list_image_files(folder)  # Find all valid image files
-raw = recognize_images(images)      # Regula OCR extraction
+### Visual Pipeline Overview
+
+```mermaid
+flowchart TD
+    A["📸 Passport Images<br/>(JPG/PNG files)"] --> B["🔍 Regula OCR Engine<br/>+ MRZ Validation"]
+    
+    B --> C["📊 Field Mapping<br/>regula_mapper.py"]
+    C --> C1["Normalize Probabilities<br/>(0-100 → 0.0-1.0)"]
+    C1 --> C2["Apply Source Preferences<br/>(MRZ vs VISUAL)"]
+    C2 --> D["🧠 Universal Format<br/>{fields + probabilities}"]
+    
+    D --> E["🔧 Core Postprocessing<br/>passport_processing.py"]
+    E --> E1["📅 Date Standardization<br/>(dd/mm/YYYY + century expansion)"]
+    E1 --> E2["🌍 Country Validation<br/>(name → 3-letter code)"]
+    E2 --> E3["📍 Place → Country Mapping<br/>(fuzzy matching)"]
+    E3 --> E4["✨ String Cleaning<br/>(unidecode + normalize)"]
+    
+    E4 --> F{"🏛️ Country<br/>Detection"}
+    F -->|PHL| G1["🇵🇭 Philippines Rules<br/>- Document # validation<br/>- Family field clearing"]
+    F -->|KEN| G2["🇰🇪 Kenya Rules<br/>- Prefix validation<br/>- Place standardization"]
+    F -->|IND| G3["🇮🇳 India Rules<br/>- Name rearrangement<br/>- Probability transfer"]
+    F -->|ETH| G4["🇪🇹 Ethiopia Rules<br/>- Format validation"]
+    F -->|Other| G5["🌐 Generic Rules<br/>- Basic validation"]
+    
+    G1 --> H["💯 Probability Adjustment<br/>min(original, validation)"]
+    G2 --> H
+    G3 --> H
+    G4 --> H
+    G5 --> H
+    
+    H --> I["📄 CSV Output<br/>+ Individual probability columns"]
+    I --> J["📊 Google Sheets Upload<br/>with confidence scores"]
+    
+    style A fill:#e1f5fe
+    style B fill:#f3e5f5
+    style D fill:#e8f5e8
+    style F fill:#fff3e0
+    style H fill:#fce4ec
+    style I fill:#f1f8e9
+    style J fill:#e3f2fd
 ```
 
-### 2. **Field Extraction & Probability Mapping**
-```python
-# Regula returns probabilities 0-100, normalized to 0.0-1.0
-uni = regula_to_universal(raw)      # Extract fields + probabilities
-# Output: {"number": "P1234567A", "name": "JOHN", probabilities: {"number": 0.97, "name": 0.95}}
-```
+### Key Processing Steps
 
-### 3. **Domain-Specific Postprocessing**
-```python
-uni = postprocess(uni)              # Apply smart validation
-# - Date format standardization (dd/mm/YYYY)
-# - Place of issue → country of issue mapping
-# - Country code validation and normalization
-# - Place of birth cleaning
-```
+#### 1. **Regula OCR Processing** 🔍
+- Extract all passport fields with raw confidence scores (0-100)
+- Parse MRZ (Machine Readable Zone) with built-in validation
+- Apply character recognition on visual text zones
 
-### 4. **Country-Specific Rules**
-```python
-formatted_data = country_rules(formatted_data, country)
-# Philippines: Document number validation (A/B/C endings)
-# Kenya: Prefix validation (AK/BK/CK) + place matching
-# India: Name field rearrangement + mother name processing
-# + 17 more countries
-```
+#### 2. **Field Mapping & Normalization** 📊
+- Normalize probabilities from 0-100 to 0.0-1.0 scale
+- Apply source preferences (MRZ preferred for numbers/dates, VISUAL for names)
+- Build universal data structure with probability tracking
 
-### 5. **CSV Export with Probabilities**
+#### 3. **Core Postprocessing** 🔧
+- **Date Standardization**: Convert to dd/mm/YYYY with century expansion
+- **Country Validation**: Map country names to ISO 3-letter codes
+- **Place Mapping**: Fuzzy match place of issue to country of issue
+- **String Cleaning**: Remove special chars, normalize Unicode
+
+#### 4. **Country-Specific Rules** 🏛️
+- **Philippines**: Document number format validation (A/B/C endings)
+- **Kenya**: Prefix validation (AK/BK/CK) + place standardization
+- **India**: Name field rearrangement + probability inheritance
+- **Ethiopia/Others**: Format-specific validation rules
+
+#### 5. **Probability Management** 💯
+- Conservative approach: `min(original_confidence, validation_confidence)`
+- Boost confidence for validated data (known places, correct formats)
+- Reduce confidence for validation failures or corrections
+
+#### 6. **Results Export** 📄
 ```csv
 inputs.image_id,outputs.number,outputs.name,probability.number,probability.name
 47648,P7264272A,ELAINE,0.97,0.97
 ```
 
-### 6. **Google Sheets Integration**
+#### 7. **Google Sheets Integration** 📊
 ```python
 ResultsAgent().upload_results(csv_file)
-# Merges with existing review data
-# Uploads values + probability scores
+# Merges with existing review data + uploads confidence scores
 # Handles data type conversion and validation
 ```
 
