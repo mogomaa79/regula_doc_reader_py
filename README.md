@@ -15,23 +15,6 @@ This system processes passport images using Regula's document reader, applies co
 - **Google Sheets Upload**: Automated results upload with probability scores
 - **Robust Error Handling**: Graceful failure handling and debugging output
 
-## 🏗️ Architecture
-
-```
-┌─────────────────┐    ┌─────────────────┐    ┌─────────────────┐
-│  Passport       │    │     Regula      │    │   Universal     │
-│  Images         │───▶│   OCR Engine    │───▶│   Data Format   │
-│  (JPG/PNG)      │    │   + MRZ         │    │  + Probabilities │
-└─────────────────┘    └─────────────────┘    └─────────────────┘
-                                                       │
-                                                       ▼
-┌─────────────────┐    ┌─────────────────┐    ┌─────────────────┐
-│  Google Sheets  │    │      CSV        │    │ Postprocessing  │
-│   Integration   │◀───│   Results       │◀───│  + Country      │
-│ + Probabilities │    │ + Probabilities │    │    Rules        │
-└─────────────────┘    └─────────────────┘    └─────────────────┘
-```
-
 ## 🔄 Validation & Postprocessing Flow
 
 ### Visual Pipeline Overview
@@ -111,33 +94,6 @@ inputs.image_id,outputs.number,outputs.name,probability.number,probability.name
 47648,P7264272A,ELAINE,0.97,0.97
 ```
 
-#### 7. **Google Sheets Integration** 📊
-```python
-ResultsAgent().upload_results(csv_file)
-# Merges with existing review data + uploads confidence scores
-# Handles data type conversion and validation
-```
-
-## 🛠️ Setup & Installation
-
-### Prerequisites
-- Python 3.11+
-- Conda environment manager
-- Regula Document Reader service running on localhost:8080
-- Google Sheets API credentials
-
-### Environment Setup
-```bash
-# Create conda environment
-conda create -n regula python=3.11
-conda activate regula
-
-# Install dependencies
-pip install -r requirements.txt
-
-# For optional country lookup
-pip install pycountry
-```
 
 ### Configuration Files
 ```
@@ -154,13 +110,7 @@ pip install pycountry
 
 ### Basic Processing
 ```python
-# Process all images in data/Philippines/
 python main.py
-
-# Output:
-# - results/regula_Philippines_results.csv
-# - results/test/[maid_id].json (debug files)
-# - Google Sheets upload
 ```
 
 ### Advanced Usage
@@ -200,47 +150,8 @@ probability.surname          # Confidence in surname
 ### Google Sheets Format
 ```
 Maid's ID | Modified Field | Regula Value | Regula Probability | Similarity
-47648     | First Name     | ELAINE       | 0.97              | true
-47648     | Last Name      | SARGUIT      | 1.0               | true
-```
-
-## 🔧 Key Components
-
-### Core Modules
-
-1. **`regula_client.py`** - Regula API interface
-   ```python
-   recognize_images(image_paths) → raw_response
-   ```
-
-2. **`regula_mapper.py`** - Field extraction & probability normalization
-   ```python
-   regula_to_universal(raw) → {fields + probabilities}
-   ```
-
-3. **`passport_processing.py`** - Domain-specific postprocessing
-   ```python
-   postprocess(data) → validated_data_with_probabilities
-   ```
-
-4. **`country_rules.py`** - Country-specific validation
-   ```python
-   country_rules(data, country_code) → country_validated_data
-   ```
-
-5. **`results_utils.py`** - Google Sheets integration
-   ```python
-   ResultsAgent().upload_results(csv_path) → sheets_upload
-   ```
-
-### Configuration
-
-```python
-# main.py - Adjust these settings
-IMAGE_PATH = "data/Philippines"           # Source folder
-DATASET_COUNTRY = "Philippines"           # Country name
-SPREADSHEET_ID = "your_sheet_id"         # Google Sheets ID
-CREDENTIALS_PATH = "credentials.json"     # API credentials
+1     | First Name     | ELAINE       | 0.97              | true
+1     | Last Name      | BENNETT      | 1.0               | true
 ```
 
 ## 🌍 Supported Countries
@@ -273,28 +184,6 @@ CREDENTIALS_PATH = "credentials.json"     # API credentials
 - **0.5-0.69**: Moderate confidence (validation concerns)
 - **0.0-0.49**: Low confidence (needs review)
 
-## 🚨 Error Handling
-
-### Graceful Degradation
-```python
-# Missing dependencies
-try:
-    import pycountry
-except ImportError:
-    pycountry = None  # Country lookup disabled
-
-# Invalid image processing
-try:
-    raw = recognize_images(images)
-except Exception as e:
-    skipped.append((maid_id, f"error: {e}"))
-```
-
-### Debug Output
-- JSON dumps for each processed maid in `results/test/`
-- Detailed error logging with maid ID tracking
-- Probability tracking through each processing step
-
 ## 📈 Performance
 
 ### Optimization Features
@@ -307,55 +196,3 @@ except Exception as e:
 - **Single passport**: ~2-5 seconds
 - **Batch of 100**: ~5-10 minutes
 - **Google Sheets upload**: ~30 seconds per batch
-
-## 🔒 Security & Privacy
-
-- **Local Processing**: All OCR processing happens locally
-- **Credential Management**: Google API credentials stored securely
-- **Data Retention**: Debug files contain sensitive data - manage carefully
-- **Access Control**: Google Sheets access controlled via service account
-
-## 🐛 Troubleshooting
-
-### Common Issues
-
-1. **"ModuleNotFoundError: pycountry"**
-   ```bash
-   pip install pycountry
-   # Or system will work without it (country lookup disabled)
-   ```
-
-2. **"KeyError: Maid's ID"**
-   - Check consolidated data format
-   - Verify data type compatibility (int vs string)
-
-3. **Probabilities showing as 0.0**
-   - Verify CSV has probability.* columns
-   - Check data merge between CSV and review data
-
-4. **Google Sheets upload fails**
-   - Verify credentials.json exists and is valid
-   - Check spreadsheet ID and permissions
-   - Ensure token.pickle is not corrupted
-
-### Debug Mode
-```python
-# Enable detailed logging
-import logging
-logging.basicConfig(level=logging.DEBUG)
-```
-
-## 📄 License
-
-This project is proprietary software for internal use.
-
-## 🤝 Contributing
-
-1. Follow existing code patterns
-2. Maintain probability tracking through all changes
-3. Add country-specific rules in `country_rules.py`
-4. Update this README for significant changes
-
----
-
-**Note**: This system is optimized for passport processing with Regula's advanced OCR capabilities. The probability tracking and country-specific validation make it highly suitable for production maid passport verification workflows.
