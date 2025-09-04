@@ -9,7 +9,7 @@ from src.adapters.regula_client import recognize_images
 from src.adapters.regula_mapper import regula_to_universal
 from src.utils import postprocess, ResultsAgent 
 
-IMAGE_PATH = "data/tst"
+IMAGE_PATH = "data/Philippines"
 DATASET_COUNTRY = IMAGE_PATH.split("/")[-1]
 SPREADSHEET_ID = "1ljIem8te0tTKrN8N9jOOnPIRh2zMvv2WB_3FBa4ycgA"
 CREDENTIALS_PATH = "credentials.json"
