@@ -28,10 +28,6 @@ def _list_image_files(folder: str) -> List[str]:
     return paths
 
 def _merge_universal(records: List[Dict[str, str]]) -> Dict[str, str]:
-    """
-    Merge multiple 'universal' dicts (front/back pages) into one row.
-    Rule: first non-empty wins; for MRZ lines pick the longest.
-    """
     out: Dict[str, str] = {}
     keys = set().union(*[r.keys() for r in records]) if records else set()
     for k in keys:
@@ -45,9 +41,6 @@ def _merge_universal(records: List[Dict[str, str]]) -> Dict[str, str]:
     return out
 
 def _collect_universal_from_raw(raw: Dict) -> Dict[str, str]:
-    """
-    Map Regula response -> universal. Try top-level first, then fill from list items.
-    """
     base = regula_to_universal(raw)
     items = raw.get("list", []) or []
     if items:
