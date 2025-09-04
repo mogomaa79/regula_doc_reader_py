@@ -95,8 +95,27 @@ def _build_field_index(raw: Dict[str, Any]) -> Dict[str, Dict[str, List[Tuple[st
             if src not in ("MRZ", "VISUAL"):
                 continue
             val = _norm(v.get("value") or v.get("originalValue"))
-            # Regula returns probability as 0-100, normalize to 0.0-1.0 scale
-            prob = float(v.get("probability") or 0) / 100.0
+            
+            # Handle probability extraction - MRZ may store probabilities in originalSymbols
+            prob = v.get("probability")
+            if prob is not None:
+                # Direct probability field exists
+                prob = float(prob) / 100.0
+            elif src == "MRZ" and "originalSymbols" in v:
+                # Calculate aggregate probability from individual character probabilities
+                symbols = v.get("originalSymbols", [])
+                if symbols:
+                    char_probs = [s.get("probability", 0) for s in symbols if isinstance(s.get("probability"), (int, float))]
+                    if char_probs:
+                        # Use minimum probability as the weakest link determines overall confidence
+                        prob = min(char_probs) / 100.0
+                    else:
+                        prob = 0.0
+                else:
+                    prob = 0.0
+            else:
+                prob = 0.0
+                
             if val:
                 rec[src].append((val, prob))
 
@@ -162,11 +181,13 @@ def regula_to_universal(raw: Dict[str, Any]) -> Dict[str, Any]:
     idx = _build_field_index(raw)
 
     probabilities: Dict[str, float] = {}
+    meta_info: Dict[str, Dict[str, Any]] = {}
 
     def pick(label: str) -> str:
         prefer = PREFER_SOURCE.get(label)  # 'MRZ', 'VISUAL', or None
         val, src, prob = _choose_value(idx, FIELD_KEYS[label], prefer)
         probabilities[label] = prob
+        meta_info[label] = {"source": src, "prob": prob * 100.0}  # Convert back to 0-100 scale for consistency
         return val
 
     out = {
@@ -212,4 +233,6 @@ def regula_to_universal(raw: Dict[str, Any]) -> Dict[str, Any]:
 
     # Include probabilities in output for postprocessing and CSV export
     out["probabilities"] = probabilities
+    # Include metadata about source selection for debugging and verification
+    out["_meta"] = meta_info
     return out

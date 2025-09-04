@@ -2,19 +2,20 @@
 from __future__ import annotations
 import os, json, pathlib
 import pandas as pd
+import time
 from typing import List, Dict
 
 from src.adapters.regula_client import recognize_images
 from src.adapters.regula_mapper import regula_to_universal
-from src.utils import postprocess, ResultsAgent  # copied from your LLM_passport_info repo
+from src.utils import postprocess, ResultsAgent 
 
-# ======== CONFIG DEFAULTS (change as needed) ========
-IMAGE_PATH = "data/Philippines"  # <root>/MaidID/*.{jpg,png,...}
+IMAGE_PATH = "data/tst"
 DATASET_COUNTRY = IMAGE_PATH.split("/")[-1]
 SPREADSHEET_ID = "1ljIem8te0tTKrN8N9jOOnPIRh2zMvv2WB_3FBa4ycgA"
 CREDENTIALS_PATH = "credentials.json"
 RESULTS_CSV = f"results/regula_{DATASET_COUNTRY}_results.csv"
-# ====================================================
+
+API_DELAY = float(os.getenv("REGULA_API_DELAY", "0.3"))  # Default 6.0 seconds for per-minute rate limits
 
 VALID_EXTS = {".jpg", ".jpeg", ".png", ".bmp", ".tif", ".tiff", ".webp"}
 
@@ -54,17 +55,34 @@ def _collect_universal_from_raw(raw: Dict) -> Dict[str, str]:
         return merged
     return base
 
-def run(image_root: str, dataset_country: str, spreadsheet_id: str, credentials_path: str, results_csv: str):
+def run(image_root: str, dataset_country: str, spreadsheet_id: str, credentials_path: str, results_csv: str, delay_between_calls: float = 6.0):
     rows = []
     skipped = []
     processed = 0
+    current_delay = delay_between_calls
+    consecutive_successes = 0
+    
+    # Load existing results for resumption
+    existing_ids = set()
+    if os.path.exists(results_csv):
+        try:
+            existing_df = pd.read_csv(results_csv)
+            existing_ids = set(existing_df["inputs.image_id"].astype(str))
+            print(f"Found {len(existing_ids)} existing records, will resume processing...")
+        except Exception as e:
+            print(f"Could not load existing results: {e}")
+            existing_ids = set()
 
-    # Walk one level: each subfolder is a Maid ID
-    for entry in sorted(os.scandir(image_root), key=lambda e: e.name)[:1]:
+    for entry in sorted(os.scandir(image_root), key=lambda e: e.name):
         if not entry.is_dir():
             continue
         maid_id = entry.name
         folder = entry.path
+        
+        # Skip if already processed
+        if maid_id in existing_ids:
+            continue
+            
         images = _list_image_files(folder)
 
         if not images:
@@ -72,6 +90,8 @@ def run(image_root: str, dataset_country: str, spreadsheet_id: str, credentials_
             continue
 
         try:
+            print(f"Processing {maid_id} ({processed + 1}) - {len(images)} image(s)... (delay: {current_delay:.1f}s)")
+            
             # 1) Regula call with all images in this Maid's folder
             raw = recognize_images(images)
             with open(f"results/test/{maid_id}.json", "w", encoding="utf-8") as f:
@@ -125,20 +145,51 @@ def run(image_root: str, dataset_country: str, spreadsheet_id: str, credentials_
             }
             rows.append(row)
             processed += 1
+            
+            # For per-minute rate limits, don't reduce delay below 6 seconds
+            consecutive_successes += 1
+            if consecutive_successes >= 5 and current_delay > 6.0:
+                current_delay = max(6.0, current_delay * 0.9)  # Reduce delay by 10% but never below 6s
+                consecutive_successes = 0
+                print(f"  → Reduced delay to {current_delay:.1f}s after consecutive successes")
+            
+            # Rate limiting: wait between API calls to avoid overwhelming the server
+            if current_delay > 0:
+                time.sleep(current_delay)
 
         except Exception as e:
-            skipped.append((maid_id, f"error: {e}"))
+            error_msg = str(e).lower()
+            is_rate_limit = any(keyword in error_msg for keyword in [
+                'rate limit', 'too many requests', '429', 'quota', 'throttle', 'ratelimit_exceeded'
+            ])
+            
+            if is_rate_limit:
+                # For per-minute rate limits, wait a full minute then reset to normal delay
+                print(f"  → Rate limit hit, cooling down for 60 seconds...")
+                time.sleep(60)  # Wait full minute for rate limit reset
+                current_delay = delay_between_calls  # Reset to original delay
+                consecutive_successes = 0
+                print(f"  → Cooldown complete, resumed with {current_delay:.1f}s delay")
+            
+            print(f"Error: {e} in {maid_id}")
             # Optional: write raw payload for debugging
-            with open(f"results/debug_{maid_id}.json", "w", encoding="utf-8") as f:
-                json.dump(raw if isinstance(raw, dict) else {"error": str(e)}, f, ensure_ascii=False, indent=2)
+            with open(f"results/test/debug_{maid_id}.json", "w", encoding="utf-8") as f:
+                json.dump(raw if 'raw' in locals() and isinstance(raw, dict) else {"error": str(e)}, f, ensure_ascii=False, indent=2)
 
-    # 4) Save CSV
+    # 4) Save CSV (append to existing if resuming)
     os.makedirs(os.path.dirname(results_csv), exist_ok=True)
-    pd.DataFrame(rows).to_csv(results_csv, index=False)
-    print(f"✅ Saved {len(rows)} rows to {results_csv} (processed={processed}, skipped={len(skipped)})")
-    if skipped:
-        for mid, reason in skipped:
-            print(f"  - skipped {mid}: {reason}")
+    if rows:
+        if existing_ids:
+            # Append new results to existing file
+            pd.DataFrame(rows).to_csv(results_csv, mode='a', header=False, index=False)
+            total_records = len(existing_ids) + len(rows)
+            print(f"✅ Appended {len(rows)} new rows to {results_csv} (total={total_records}, processed={processed}, skipped={len(skipped)})")
+        else:
+            # Create new file
+            pd.DataFrame(rows).to_csv(results_csv, index=False)
+            print(f"✅ Saved {len(rows)} rows to {results_csv} (processed={processed}, skipped={len(skipped)})")
+    else:
+        print(f"ℹ️  No new records to process (total existing={len(existing_ids)}, skipped={len(skipped)})")
 
     # 5) Upload to Google Sheet via your existing agent
     ResultsAgent(
@@ -149,4 +200,6 @@ def run(image_root: str, dataset_country: str, spreadsheet_id: str, credentials_
     print("✅ Uploaded to Google Sheet")
 
 if __name__ == "__main__":
-    run(IMAGE_PATH, DATASET_COUNTRY, SPREADSHEET_ID, CREDENTIALS_PATH, RESULTS_CSV)
+    print(f"Starting processing with {API_DELAY}s delay (optimized for per-minute rate limits)...")
+    print(f"To change delay, set REGULA_API_DELAY environment variable (e.g., REGULA_API_DELAY=8.0)")
+    run(IMAGE_PATH, DATASET_COUNTRY, SPREADSHEET_ID, CREDENTIALS_PATH, RESULTS_CSV, API_DELAY)
