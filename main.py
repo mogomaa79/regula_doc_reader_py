@@ -9,13 +9,16 @@ from src.adapters.regula_client import recognize_images
 from src.adapters.regula_mapper import regula_to_universal
 from src.utils import postprocess, ResultsAgent 
 
-IMAGE_PATH = "data/Philippines"
+from dotenv import load_dotenv
+load_dotenv()
+
+IMAGE_PATH = os.getenv("IMAGE_PATH")
 DATASET_COUNTRY = IMAGE_PATH.split("/")[-1]
-SPREADSHEET_ID = "1ljIem8te0tTKrN8N9jOOnPIRh2zMvv2WB_3FBa4ycgA"
-CREDENTIALS_PATH = "credentials.json"
+SPREADSHEET_ID = os.getenv("SPREADSHEET_ID")
+CREDENTIALS_PATH = os.getenv("CREDENTIALS_PATH")
 RESULTS_CSV = f"results/regula_{DATASET_COUNTRY}_results.csv"
 
-API_DELAY = float(os.getenv("REGULA_API_DELAY", "0.3"))  # Default 6.0 seconds for per-minute rate limits
+API_DELAY = float(os.getenv("REGULA_API_DELAY", "0.3")) 
 
 VALID_EXTS = {".jpg", ".jpeg", ".png", ".bmp", ".tif", ".tiff", ".webp"}
 
